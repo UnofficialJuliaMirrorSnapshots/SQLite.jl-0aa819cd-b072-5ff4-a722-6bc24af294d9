@@ -48,11 +48,17 @@ function generate_namedtuple(::Type{NamedTuple{names, types}}, q) where {names, 
     end
 end
 
-function Base.iterate(q::Query{NT}, row::Int=1) where {NT}
+function Base.iterate(q::Query{NT}) where {NT}
     done(q) && return nothing
     nt = generate_namedtuple(NT, q)
+    return nt, nothing
+end
+
+function Base.iterate(q::Query{NT}, ::Nothing) where {NT}
     q.status[] = sqlite3_step(q.stmt.handle)
-    return nt, row + 1
+    done(q) && return nothing
+    nt = generate_namedtuple(NT, q)
+    return nt, nothing
 end
 
 """
@@ -65,7 +71,7 @@ Will bind `values` to any parameters in `sql`.
 `stricttypes=false` will remove strict column typing in the result set, making each column effectively `Vector{Any}`; in sqlite, individual
 column values are only loosely associated with declared column types, and instead each carry their own type information. This can lead to
 type errors when trying to query columns when a single type is expected.
-`nullable` controls whether `null` (`missing` in Julia) values are expected in a column.
+`nullable` controls whether `NULL` (`missing` in Julia) values are expected in a column.
 
 An `SQLite.Query` object will iterate NamedTuple rows by default, and also supports the Tables.jl interface for integrating with
 any other Tables.jl implementation. Due note however that iterating an sqlite result set is a forward-once-only operation. If you need
