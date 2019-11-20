@@ -13,6 +13,7 @@ include("api.jl")
 # Normal constructor from filename
 sqliteopen(file, handle) = sqlite3_open(file, handle)
 sqliteerror(db) = throw(SQLiteException(unsafe_string(sqlite3_errmsg(db.handle))))
+sqliteexception(db) = SQLiteException(unsafe_string(sqlite3_errmsg(db.handle)))
 
 """
 represents an SQLite database, either backed by an on-disk file or in-memory
@@ -105,23 +106,25 @@ Additional methods exist for working individual SQL parameters:
 """
 function bind! end
 
+bind!(stmt::Stmt, ::Nothing) = nothing
+
 function bind!(stmt::Stmt, values::Tuple)
     nparams = sqlite3_bind_parameter_count(stmt.handle)
-    @assert nparams == length(values) "you must provide values for all placeholders"
+    @assert nparams == length(values) "you must provide values for all query placeholders"
     for i in 1:nparams
         @inbounds bind!(stmt, i, values[i])
     end
 end
 function bind!(stmt::Stmt, values::Vector)
     nparams = sqlite3_bind_parameter_count(stmt.handle)
-    @assert nparams == length(values) "you must provide values for all placeholders"
+    @assert nparams == length(values) "you must provide values for all query placeholders"
     for i in 1:nparams
         @inbounds bind!(stmt, i, values[i])
     end
 end
 function bind!(stmt::Stmt, values::Dict{Symbol, V}) where {V}
     nparams = sqlite3_bind_parameter_count(stmt.handle)
-    @assert nparams == length(values) "you must provide values for all placeholders"
+    @assert nparams == length(values) "you must provide values for all query placeholders"
     for i in 1:nparams
         name = unsafe_string(sqlite3_bind_parameter_name(stmt.handle, i))
         @assert !isempty(name) "nameless parameters should be passed as a Vector"
@@ -138,14 +141,14 @@ function bind!(stmt::Stmt,name::AbstractString, val)
     end
     return bind!(stmt, i, val)
 end
-bind!(stmt::Stmt, i::Int, val::AbstractFloat)  = (stmt.params[i] = val; sqlite3_bind_double(stmt.handle, i ,Float64(val)); return nothing)
-bind!(stmt::Stmt, i::Int, val::Int32)          = (stmt.params[i] = val; sqlite3_bind_int(stmt.handle, i ,val); return nothing)
-bind!(stmt::Stmt, i::Int, val::Int64)          = (stmt.params[i] = val; sqlite3_bind_int64(stmt.handle, i ,val); return nothing)
-bind!(stmt::Stmt, i::Int, val::Missing)        = (stmt.params[i] = val; sqlite3_bind_null(stmt.handle, i ); return nothing)
-bind!(stmt::Stmt, i::Int, val::AbstractString) = (stmt.params[i] = val; sqlite3_bind_text(stmt.handle, i ,val); return nothing)
-bind!(stmt::Stmt, i::Int, val::WeakRefString{UInt8})   = (stmt.params[i] = val; sqlite3_bind_text(stmt.handle, i, val.ptr, val.len); return nothing)
-bind!(stmt::Stmt, i::Int, val::WeakRefString{UInt16})  = (stmt.params[i] = val; sqlite3_bind_text16(stmt.handle, i, val.ptr, val.len*2); return nothing)
-bind!(stmt::Stmt, i::Int, val::Vector{UInt8})  = (stmt.params[i] = val; sqlite3_bind_blob(stmt.handle, i, val); return nothing)
+bind!(stmt::Stmt, i::Int, val::AbstractFloat)  = (stmt.params[i] = val; @CHECK stmt.db sqlite3_bind_double(stmt.handle, i ,Float64(val)); return nothing)
+bind!(stmt::Stmt, i::Int, val::Int32)          = (stmt.params[i] = val; @CHECK stmt.db sqlite3_bind_int(stmt.handle, i ,val); return nothing)
+bind!(stmt::Stmt, i::Int, val::Int64)          = (stmt.params[i] = val; @CHECK stmt.db sqlite3_bind_int64(stmt.handle, i ,val); return nothing)
+bind!(stmt::Stmt, i::Int, val::Missing)        = (stmt.params[i] = val; @CHECK stmt.db sqlite3_bind_null(stmt.handle, i ); return nothing)
+bind!(stmt::Stmt, i::Int, val::AbstractString) = (stmt.params[i] = val; @CHECK stmt.db sqlite3_bind_text(stmt.handle, i ,val); return nothing)
+bind!(stmt::Stmt, i::Int, val::WeakRefString{UInt8})   = (stmt.params[i] = val; @CHECK stmt.db sqlite3_bind_text(stmt.handle, i, val.ptr, val.len); return nothing)
+bind!(stmt::Stmt, i::Int, val::WeakRefString{UInt16})  = (stmt.params[i] = val; @CHECK stmt.db sqlite3_bind_text16(stmt.handle, i, val.ptr, val.len*2); return nothing)
+bind!(stmt::Stmt, i::Int, val::Vector{UInt8})  = (stmt.params[i] = val; @CHECK stmt.db sqlite3_bind_blob(stmt.handle, i, val); return nothing)
 # Fallback is BLOB and defaults to serializing the julia value
 
 # internal wrapper mutable struct to, in-effect, mark something which has been serialized
@@ -234,27 +237,30 @@ sqlitetype(::Type{Missing}) = "NULL"
 sqlitetype(x) = "BLOB"
 
 """
-`SQLite.execute!(stmt::SQLite.Stmt)` => `Cvoid`
-
-`SQLite.execute!(db::DB, sql::String)` => `Cvoid`
-
+  `SQLite.execute!(stmt::SQLite.Stmt; values=[])` => `nothing`
+  `SQLite.execute!(db::DB, sql::String)` => `nothing`
 
 Execute a prepared SQLite statement, not checking for or returning any results.
+Will bind `values` to any parameters in `stmt`.
 """
 function execute! end
 
-function execute!(stmt::Stmt)
+function execute!(stmt::Stmt; values=nothing)
+    bind!(stmt, values)
     r = sqlite3_step(stmt.handle)
     if r == SQLITE_DONE
         sqlite3_reset(stmt.handle)
     elseif r != SQLITE_ROW
-        sqliteerror(stmt.db)
+        e = sqliteexception(stmt.db)
+        sqlite3_reset(stmt.handle)
+        throw(e)
     end
     return r
 end
 
-function execute!(db::DB, sql::AbstractString)
+function execute!(db::DB, sql::AbstractString; values=nothing)
     stmt = Stmt(db, sql)
+    bind!(stmt, values)
     r = execute!(stmt)
     finalize(stmt)
     return r
@@ -433,5 +439,14 @@ columns(db::DB, table::AbstractString, sink=DataFrame) = Query(db, "PRAGMA table
 returns the auto increment id of the last row
 """
 last_insert_rowid(db::DB) = sqlite3_last_insert_rowid(db.handle)
+
+"""
+`SQLite.enable_load_extension(db, enable::Bool=true)`
+
+Enables extension loading (off by default) on the sqlite database `db`. Pass `false` as the second argument to disable.
+"""
+function enable_load_extension(db, enable::Bool=true)
+   ccall((:sqlite3_enable_load_extension, SQLite.libsqlite), Cint, (Ptr{Cvoid}, Cint), db.handle, enable)
+end
 
 end # module

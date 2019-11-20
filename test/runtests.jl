@@ -2,10 +2,25 @@ using SQLite
 using Test, Dates, Random, WeakRefStrings, Tables, DataFrames
 
 import Base: +, ==
+mutable struct Point{T}
+    x::T
+    y::T
+end
+==(a::Point, b::Point) = a.x == b.x && a.y == b.y
+
+mutable struct Point3D{T<:Number}
+    x::T
+    y::T
+    z::T
+end
+==(a::Point3D, b::Point3D) = a.x == b.x && a.y == b.y && a.z == b.z
++(a::Point3D, b::Point3D) = Point3D(a.x + b.x, a.y + b.y, a.z + b.z)
+
 
 dbfile = joinpath(dirname(pathof(SQLite)),"../test/Chinook_Sqlite.sqlite")
-dbfile2 = joinpath(dirname(pathof(SQLite)),"../test/test.sqlite")
+dbfile2 = joinpath(tempdir(), "test.sqlite")
 cp(dbfile, dbfile2; force=true)
+chmod(dbfile2, 0o777)
 db = SQLite.DB(dbfile2)
 
 # regular SQLite tests
@@ -84,24 +99,24 @@ r = SQLite.Query(db, "select * from $tablename") |> DataFrame
 @test all([typeof(i) for i in r[1]] .== Dates.Date)
 SQLite.drop!(db, "$tablename")
 
-SQLite.Query(db, "CREATE TABLE temp AS SELECT * FROM Album")
+SQLite.execute!(db, "CREATE TABLE temp AS SELECT * FROM Album")
 r = SQLite.Query(db, "SELECT * FROM temp LIMIT ?"; values=[3]) |> DataFrame
 @test size(r) == (3,3)
 r = SQLite.Query(db, "SELECT * FROM temp WHERE Title LIKE ?"; values=["%time%"]) |> DataFrame
 @test r[1] == [76, 111, 187]
-SQLite.Query(db, "INSERT INTO temp VALUES (?1, ?3, ?2)"; values=[0,0,"Test Album"])
+SQLite.execute!(db, "INSERT INTO temp VALUES (?1, ?3, ?2)"; values=[0,0,"Test Album"])
 r = SQLite.Query(db, "SELECT * FROM temp WHERE AlbumId = 0") |> DataFrame
 @test r[1][1] === 0
 @test r[2][1] == "Test Album"
 @test r[3][1] === 0
 SQLite.drop!(db, "temp")
 
-SQLite.Query(db, "CREATE TABLE temp AS SELECT * FROM Album")
+SQLite.execute!(db, "CREATE TABLE temp AS SELECT * FROM Album")
 r = SQLite.Query(db, "SELECT * FROM temp LIMIT :a"; values=Dict(:a => 3)) |> DataFrame
 @test size(r) == (3,3)
 r = SQLite.Query(db, "SELECT * FROM temp WHERE Title LIKE @word"; values=Dict(:word => "%time%")) |> DataFrame
 @test r[1] == [76, 111, 187]
-SQLite.Query(db, "INSERT INTO temp VALUES (@lid, :title, \$rid)"; values=Dict(:rid => 0, :lid => 0, :title => "Test Album"))
+SQLite.execute!(db, "INSERT INTO temp VALUES (@lid, :title, \$rid)"; values=Dict(:rid => 0, :lid => 0, :title => "Test Album"))
 r = SQLite.Query(db, "SELECT * FROM temp WHERE AlbumId = 0") |> DataFrame
 @test r[1][1] === 0
 @test r[2][1] == "Test Album"
@@ -170,17 +185,11 @@ r = SQLite.Query(db, "SELECT bigsum(TrackId) FROM PlaylistTrack") |> DataFrame
 s = SQLite.Query(db, "SELECT TrackId FROM PlaylistTrack") |> DataFrame
 # @test r[1][1] == big(sum(convert(Vector{Int},s[1])))
 
-SQLite.Query(db, "CREATE TABLE points (x INT, y INT, z INT)")
-SQLite.Query(db, "INSERT INTO points VALUES (?, ?, ?)"; values=[1, 2, 3])
-SQLite.Query(db, "INSERT INTO points VALUES (?, ?, ?)"; values=[4, 5, 6])
-SQLite.Query(db, "INSERT INTO points VALUES (?, ?, ?)"; values=[7, 8, 9])
-mutable struct Point3D{T<:Number}
-    x::T
-    y::T
-    z::T
-end
-==(a::Point3D, b::Point3D) = a.x == b.x && a.y == b.y && a.z == b.z
-+(a::Point3D, b::Point3D) = Point3D(a.x + b.x, a.y + b.y, a.z + b.z)
+SQLite.execute!(db, "CREATE TABLE points (x INT, y INT, z INT)")
+SQLite.execute!(db, "INSERT INTO points VALUES (?, ?, ?)"; values=[1, 2, 3])
+SQLite.execute!(db, "INSERT INTO points VALUES (?, ?, ?)"; values=[4, 5, 6])
+SQLite.execute!(db, "INSERT INTO points VALUES (?, ?, ?)"; values=[7, 8, 9])
+
 sumpoint(p::Point3D, x, y, z) = p + Point3D(x, y, z)
 SQLite.register(db, Point3D(0, 0, 0), sumpoint)
 r = SQLite.Query(db, "SELECT sumpoint(x, y, z) FROM points") |> DataFrame
@@ -188,7 +197,7 @@ r = SQLite.Query(db, "SELECT sumpoint(x, y, z) FROM points") |> DataFrame
 SQLite.drop!(db, "points")
 
 db2 = SQLite.DB()
-SQLite.Query(db2, "CREATE TABLE tab1 (r REAL, s INT)")
+SQLite.execute!(db2, "CREATE TABLE tab1 (r REAL, s INT)")
 
 @test_throws SQLite.SQLiteException SQLite.drop!(db2, "nonexistant")
 # should not throw anything
@@ -224,26 +233,22 @@ stmt = SQLite.Stmt(db, "INSERT INTO tbl (a) VALUES (@a);")
 SQLite.bind!(stmt, "@a", 1)
 
 binddb = SQLite.DB()
-SQLite.Query(binddb, "CREATE TABLE temp (n NULL, i6 INT, f REAL, s TEXT, a BLOB)")
-SQLite.Query(binddb, "INSERT INTO temp VALUES (?1, ?2, ?3, ?4, ?5)"; values=Any[missing, convert(Int64,6), 6.4, "some text", b"bytearray"])
+SQLite.execute!(binddb, "CREATE TABLE temp (n NULL, i6 INT, f REAL, s TEXT, a BLOB)")
+SQLite.execute!(binddb, "INSERT INTO temp VALUES (?1, ?2, ?3, ?4, ?5)"; values=Any[missing, convert(Int64,6), 6.4, "some text", b"bytearray"])
 r = SQLite.Query(binddb, "SELECT * FROM temp") |> DataFrame
 @test isa(r[1][1], Missing)
 @test isa(r[2][1], Int)
 @test isa(r[3][1], Float64)
 @test isa(r[4][1], AbstractString)
 @test isa(r[5][1], Base.CodeUnits)
-SQLite.Query(binddb, "CREATE TABLE blobtest (a BLOB, b BLOB)")
-SQLite.Query(binddb, "INSERT INTO blobtest VALUES (?1, ?2)"; values=Any[b"a", b"b"])
-SQLite.Query(binddb, "INSERT INTO blobtest VALUES (?1, ?2)"; values=Any[b"a", BigInt(2)])
-mutable struct Point{T}
-    x::T
-    y::T
-end
-==(a::Point, b::Point) = a.x == b.x && a.y == b.y
+SQLite.execute!(binddb, "CREATE TABLE blobtest (a BLOB, b BLOB)")
+SQLite.execute!(binddb, "INSERT INTO blobtest VALUES (?1, ?2)"; values=Any[b"a", b"b"])
+SQLite.execute!(binddb, "INSERT INTO blobtest VALUES (?1, ?2)"; values=Any[b"a", BigInt(2)])
+
 p1 = Point(1, 2)
 p2 = Point(1.3, 2.4)
-SQLite.Query(binddb, "INSERT INTO blobtest VALUES (?1, ?2)"; values=Any[b"a", p1])
-SQLite.Query(binddb, "INSERT INTO blobtest VALUES (?1, ?2)"; values=Any[b"a", p2])
+SQLite.execute!(binddb, "INSERT INTO blobtest VALUES (?1, ?2)"; values=Any[b"a", p1])
+SQLite.execute!(binddb, "INSERT INTO blobtest VALUES (?1, ?2)"; values=Any[b"a", p2])
 r = SQLite.Query(binddb, "SELECT * FROM blobtest"; stricttypes=false) |> DataFrame
 for value in r[1]
     @test value == b"a"
@@ -275,3 +280,15 @@ GC.gc() # this MUST NOT garbage collect any of the bound values
 SQLite.clear!(stmt)
 GC.gc() # this will garbage collect the no longer bound values
 @test isempty(wkdict)
+
+db = SQLite.DB()
+SQLite.execute!(db, "CREATE TABLE T (a TEXT, PRIMARY KEY (a))")
+
+q = SQLite.Stmt(db, "INSERT INTO T VALUES(?)")
+SQLite.bind!(q, 1, "a")
+SQLite.execute!(q)
+
+SQLite.bind!(q, 1, "a")
+@test_throws SQLite.SQLiteException SQLite.execute!(q)
+
+@test SQLite.@OK SQLite.enable_load_extension(db)

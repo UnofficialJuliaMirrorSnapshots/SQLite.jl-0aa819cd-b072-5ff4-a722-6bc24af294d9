@@ -12,7 +12,7 @@ SQLite.load!
 ## Types/Functions
 * `SQLite.DB(file::AbstractString)`
 
-  `SQLite.DB` requires the `file` string argument as the name of either a pre-defined SQLite database to be opened, or if the file doesn't exist, a database will be created.
+  `SQLite.DB` requires the `file` string argument as the name of either a pre-defined SQLite database to be opened, or if the file doesn't exist, a database will be created. Note that only sqlite 3.x version files are supported.
 
   The `SQLite.DB` object represents a single connection to an SQLite database. All other SQLite.jl functions take an `SQLite.DB` as the first argument as context.
 
@@ -49,12 +49,13 @@ SQLite.load!
   > In the examples above, NNN is an integer value and AAA is an identifier. A parameter initially has a value of NULL. Prior to calling sqlite3_step() for the first time or immediately after sqlite3_reset(), the application can invoke one of the sqlite3_bind() interfaces to attach values to the parameters. Each call to sqlite3_bind() overrides prior bindings on the same parameter.
 
 
-* `SQLite.execute!(stmt::SQLite.Stmt)`
+* `SQLite.execute!(stmt::SQLite.Stmt; values=[])`
 
   `SQLite.execute!(db::SQLite.DB, sql::String)`
 
 
-  Used to execute a prepared `SQLite.Stmt`. The 2nd method is a convenience method to pass in an SQL statement as a string which gets prepared and executed in one call. This method does not check for or return any results, hence it is only useful for database manipulation methods (i.e. ALTER, CREATE, UPDATE, DROP). To return results, see `SQLite.query` below.
+  Used to execute a prepared `SQLite.Stmt`. The 2nd method is a convenience method to pass in an SQL statement as a string which gets prepared and executed in one call. This method does not check for or return any results, hence it is only useful for database manipulation methods (i.e. ALTER, CREATE, UPDATE, DROP). To return results, see `SQLite.query` below. With a prepared `stmt`, you can also pass a `values` iterable or `Dict` that will bind to 
+  parameters in the prepared query.
 
 
 * `SQLite.Query(db::SQLite.DB, sql::String, values=[])`
@@ -106,6 +107,9 @@ re-execute the query and position the iterator back at the begining of the resul
 
   List the indices that have been created in `db`
 
+* `SQLite.enable_load_extensions(db::SQLite.DB, enable::Bool=true)`
+
+  Enables extension loading (off by default) on the sqlite database `db`. Pass `false` as the second argument to disable.
 
 * `SQLite.register(db::SQLite.DB, func::Function; nargs::Int=-1, name::AbstractString=string(func), isdeterm::Bool=true)`
 
